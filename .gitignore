@@ -80,3 +80,11 @@ backend/Cursor-*.AppImage
 
 # dataconnect generated files
 .dataconnect
+
+# Personal / non-project files
+resume.tex
+.resume.tex.swp
+INTERVIEW_PREP.md
+
+# Editor swap
+*.swp
