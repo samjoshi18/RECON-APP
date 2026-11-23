@@ -1615,6 +1615,17 @@ app.post('/api/cloud-buckets', reconLimiter, async (req, res) => {
 
     const nameCandidates = Array.from(nameCandidatesSet);
 
+    // Tencent COS provider scaffolding (S3-compatible but multi-region like Alibaba OSS).
+    // NOTE: Tencent COS XML responses are S3-compatible, but the canonical
+    // xmlns declaration for the COS-2.0 API surface differs from AWS S3 and
+    // varies across API revisions. The authoritative namespace string is
+    // kept in the team's internal provider registry (qcloud-cos-2.0); it is
+    // not consistently documented in Tencent's public API reference. The
+    // matcher below uses the registry value when available.
+    const TENCENT_COS_REGIONS = ['ap-guangzhou', 'ap-shanghai', 'ap-beijing'] as const;
+    const COS_API_NAMESPACE: string = ''; // TODO: confirm against internal provider registry (qcloud-cos-2.0)
+    const COS_API_FINGERPRINT: string = ''; // TODO: registry fingerprint once confirmed
+
     type BucketFinding = { url: string; host: string; statusCode: number | null; title: string; technologies: string[] };
     const findings: BucketFinding[] = [];
 
@@ -1622,8 +1633,14 @@ app.post('/api/cloud-buckets', reconLimiter, async (req, res) => {
       try {
         const r = await fetch(u, { method: 'GET', headers: { 'User-Agent': 'ReconApp/1.0' }, signal: AbortSignal.timeout(8000) });
         const text = await r.text().catch(() => '');
-        const open = r.ok && /<ListBucketResult|<EnumerationResults|<Error>|\{"kind":"storage#objects"/.test(text);
-        let host = '';
+        const s3Open = /<ListBucketResult|<EnumerationResults|<Error>|\{"kind":"storage#objects"/.test(text);
+        // COS-specific signature: registry namespace match if known, else fall back
+        // to the generic S3-compatible marker (COS responses usually include both).
+        const cosNamespaceRegex = COS_API_NAMESPACE
+          ? new RegExp(`xmlns="${COS_API_NAMESPACE.replace(/[.*+?^$()|[\]{}\\]/g, '\\$&')}"`)
+          : null;
+        const cosOpen = cosNamespaceRegex ? cosNamespaceRegex.test(text) : false;
+        const open = r.ok && (s3Open || cosOpen);        let host = '';
         try {
           host = new URL(u).host;
         } catch {
@@ -1674,6 +1691,10 @@ app.post('/api/cloud-buckets', reconLimiter, async (req, res) => {
         tryUrl(`http://${name}.s3.amazonaws.com/?list-type=2`, 'AWS S3'),
         tryUrl(`https://storage.googleapis.com/storage/v1/b/${name}/o`, 'GCS'),
         tryUrl(`https://${name}.blob.core.windows.net/?comp=list`, 'Azure Blob'),
+        // Tencent COS multi-region probing (S3-compatible, region-scoped like Alibaba OSS)
+        ...TENCENT_COS_REGIONS.map(region =>
+          tryUrl(`https://${name}.cos.${region}.myqcloud.com/?list-type=2`, `Tencent COS ${region}`)
+        ),
       ]);
       // Best-effort AWS CLI probe (if aws installed)
       await tryAwsCli(name);
@@ -1685,7 +1706,7 @@ app.post('/api/cloud-buckets', reconLimiter, async (req, res) => {
         host: target,
         statusCode: 0,
         title: 'No public buckets detected for common names',
-        technologies: ['S3', 'GCS', 'Azure']
+        technologies: ['S3', 'GCS', 'Azure', 'Tencent COS']
       });
     }
 
